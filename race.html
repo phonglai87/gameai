@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEON RACER: LIGHTSPEED HORIZON</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap');
+
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Orbitron', sans-serif;
+            color: #fff;
+            user-select: none;
+        }
+
+        #game-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        /* HUD GIAO DIỆN */
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 2;
+            pointer-events: none; /* Để click xuyên qua vào game */
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 20px;
+            box-sizing: border-box;
+            background: radial-gradient(circle, transparent 60%, rgba(0, 255, 255, 0.1) 100%);
+        }
+
+        .hud-top {
+            display: flex;
+            justify-content: space-between;
+            text-shadow: 0 0 10px #0ff;
+        }
+
+        .score-box {
+            font-size: 24px;
+            color: #0ff;
+        }
+
+        .speed-box {
+            font-size: 24px;
+            color: #f0f;
+            text-align: right;
+        }
+
+        .speed-bar {
+            width: 200px;
+            height: 10px;
+            background: #333;
+            margin-top: 5px;
+            border: 1px solid #f0f;
+            transform: skewX(-20deg);
+        }
+
+        .speed-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #f0f, #0ff);
+            width: 0%;
+            transition: width 0.1s;
+        }
+
+        .center-msg {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            display: none;
+        }
+
+        h1 {
+            font-size: 60px;
+            margin: 0;
+            text-transform: uppercase;
+            background: -webkit-linear-gradient(#0ff, #f0f);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-shadow: 0 0 20px rgba(0, 255, 255, 0.5);
+            letter-spacing: 5px;
+        }
+
+        p { font-size: 20px; color: #ccc; }
+
+        .controls-hint {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 14px;
+            color: rgba(255, 255, 255, 0.5);
+        }
+
+        /* Scanline effect */
+        .scanlines {
+            position: fixed;
+            left: 0;
+            top: 0;
+            width: 100vw;
+            height: 100vh;
+            background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,0) 50%, rgba(0,0,0,0.2) 50%, rgba(0,0,0,0.2));
+            background-size: 100% 4px;
+            z-index: 10;
+            pointer-events: none;
+            opacity: 0.3;
+        }
+
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <div class="scanlines"></div>
+
+    <div id="ui-layer">
+        <div class="hud-top">
+            <div class="score-box">DISTANCE: <span id="score">0</span> KM</div>
+            <div class="speed-box">
+                SPEED: <span id="speed-display">0</span> KM/H
+                <div class="speed-bar"><div class="speed-fill" id="speed-bar-fill"></div></div>
+            </div>
+        </div>
+
+        <div id="start-screen" class="center-msg" style="display: block;">
+            <h1>NEON RACER</h1>
+            <p>Nhấn [SPACE] hoặc [CLICK] để Đua</p>
+        </div>
+
+        <div id="game-over-screen" class="center-msg">
+            <h1 style="color: red; -webkit-text-fill-color: red; text-shadow: 0 0 20px red;">CRASHED</h1>
+            <p>Score: <span id="final-score">0</span></p>
+            <p>Nhấn [SPACE] để đua lại</p>
+        </div>
+
+        <div class="controls-hint">
+            [A] / [LEFT] : Trái  |  [D] / [RIGHT] : Phải  |  [SPACE] : Boost (Tăng tốc)
+        </div>
+    </div>
+
+    <div id="game-container"></div>
+
+    <script>
+        // --- CẤU HÌNH GAME ---
+        const CONFIG = {
+            laneWidth: 4,
+            baseSpeed: 0.5,
+            maxSpeed: 1.5,
+            boostMultiplier: 2.0,
+            colors: {
+                fog: 0x0a001a,
+                grid: 0xff00ff,
+                sky: 0x000000,
+                obstacle: 0x00ffff,
+                ship: 0xffffff
+            }
+        };
+
+        // --- BIẾN TOÀN CỤC ---
+        let scene, camera, renderer;
+        let player, gridHelper, particles;
+        let obstacles = [];
+        let gameActive = false;
+        let score = 0;
+        let speed = CONFIG.baseSpeed;
+        let currentLane = 0; // -1: Trái, 0: Giữa, 1: Phải
+        let targetX = 0;
+        let isBoosting = false;
+
+        // Âm thanh giả lập (Visual Audio)
+        let hueRotate = 0;
+
+        // Init
+        function init() {
+            // 1. Scene & Camera
+            scene = new THREE.Scene();
+            scene.fog = new THREE.FogExp2(CONFIG.colors.fog, 0.08); // Sương mù dày để che tầm nhìn xa
+            scene.background = new THREE.Color(CONFIG.colors.fog);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 3, 6);
+            camera.lookAt(0, 0, -10);
+
+            // 2. Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.getElementById('game-container').appendChild(renderer.domElement);
+
+            // 3. Ánh sáng
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+
+            const pointLight = new THREE.PointLight(0x00ffff, 1, 20);
+            pointLight.position.set(0, 2, 0);
+            scene.add(pointLight);
+
+            // 4. Môi trường (Sàn Grid vô tận)
+            // Tạo 2 sàn để loop
+            createFloor();
+
+            // 5. Player (Phi thuyền)
+            createPlayer();
+
+            // 6. Particles (Hiệu ứng bụi không gian)
+            createParticles();
+
+            // Event Listeners
+            window.addEventListener('resize', onWindowResize, false);
+            document.addEventListener('keydown', handleInput);
+            document.addEventListener('keyup', handleKeyUp);
+            document.addEventListener('click', () => {
+                if (!gameActive) startGame();
+            });
+
+            animate();
+        }
+
+        function createFloor() {
+            // Grid mặt sàn phong cách Tron
+            const size = 200;
+            const divisions = 100;
+            gridHelper = new THREE.GridHelper(size, divisions, CONFIG.colors.grid, 0x220033);
+            gridHelper.position.y = -1;
+            gridHelper.position.z = -50;
+            scene.add(gridHelper);
+            
+            // Thêm mặt phẳng phản chiếu bên dưới để tạo độ sâu
+            const planeGeometry = new THREE.PlaneGeometry(200, 200);
+            const planeMaterial = new THREE.MeshBasicMaterial({ color: 0x050011 });
+            const plane = new THREE.Mesh(planeGeometry, planeMaterial);
+            plane.rotation.x = -Math.PI / 2;
+            plane.position.y = -1.1;
+            scene.add(plane);
+        }
+
+        function createPlayer() {
+            const geometry = new THREE.ConeGeometry(0.5, 1.5, 4); // Hình kim tự tháp
+            const material = new THREE.MeshStandardMaterial({ 
+                color: 0x111111,
+                emissive: 0x00ffff,
+                emissiveIntensity: 0.8,
+                roughness: 0.4,
+                metalness: 0.8
+            });
+            
+            player = new THREE.Mesh(geometry, material);
+            player.rotation.x = -Math.PI / 2; // Nằm ngang
+            player.rotation.y = Math.PI / 4; // Xoay cạnh
+            player.position.y = 0;
+            player.position.z = 2; // Vị trí xe
+            
+            // Động cơ (Thruster)
+            const thrusterGeo = new THREE.SphereGeometry(0.2, 8, 8);
+            const thrusterMat = new THREE.MeshBasicMaterial({ color: 0x00ffff });
+            const thruster = new THREE.Mesh(thrusterGeo, thrusterMat);
+            thruster.position.y = -0.8;
+            player.add(thruster);
+
+            scene.add(player);
+        }
+
+        function createParticles() {
+            const particleCount = 500;
+            const geometry = new THREE.BufferGeometry();
+            const positions = [];
+            
+            for(let i=0; i<particleCount; i++) {
+                positions.push((Math.random() - 0.5) * 100); // x
+                positions.push((Math.random() - 0.5) * 50 + 10); // y
+                positions.push((Math.random() - 0.5) * 200 - 50); // z
+            }
+            
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            const material = new THREE.PointsMaterial({ color: 0xffffff, size: 0.1 });
+            particles = new THREE.Points(geometry, material);
+            scene.add(particles);
+        }
+
+        function spawnObstacle() {
+            // Tạo chướng ngại vật ngẫu nhiên ở 3 làn
+            const lanes = [-CONFIG.laneWidth, 0, CONFIG.laneWidth];
+            const chosenLane = lanes[Math.floor(Math.random() * lanes.length)];
+            
+            // Hình học Neon Box
+            const geometry = new THREE.BoxGeometry(2, 2, 2);
+            // Viền phát sáng (Wireframe look)
+            const material = new THREE.MeshBasicMaterial({ 
+                color: 0x000000, 
+            });
+            
+            const box = new THREE.Mesh(geometry, material);
+            
+            // Thêm viền (Edges)
+            const edges = new THREE.EdgesGeometry(geometry);
+            const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0xff0055 })); // Màu đỏ hồng
+            box.add(line);
+
+            box.position.set(chosenLane, 0, -80); // Xuất hiện ở xa
+            scene.add(box);
+            obstacles.push(box);
+        }
+
+        // --- GAME LOOP ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Hiệu ứng màu RGB thay đổi liên tục
+            hueRotate++;
+            const hueColor = `hsl(${hueRotate % 360}, 100%, 50%)`;
+            if(player) player.material.emissive.set(isBoosting ? 0xffffff : 0x00ffff);
+
+            if (!gameActive) {
+                // Hiệu ứng chờ ở màn hình start
+                renderer.render(scene, camera);
+                if(player) player.rotation.z += 0.01;
+                return;
+            }
+
+            // 1. Tăng điểm & Tốc độ
+            score += Math.round(speed * 10);
+            updateHUD();
+
+            // 2. Di chuyển xe mượt mà (Lerp)
+            player.position.x += (targetX - player.position.x) * 0.1;
+            
+            // Nghiêng xe khi rẽ
+            player.rotation.z = -(player.position.x - targetX) * 0.1; 
+            // Rung lắc khi chạy nhanh
+            player.position.y = Math.sin(Date.now() * 0.02) * 0.05;
+
+            // 3. Di chuyển môi trường (Tạo cảm giác đang chạy)
+            const currentSpeed = isBoosting ? speed * CONFIG.boostMultiplier : speed;
+            
+            // Di chuyển Grid
+            gridHelper.position.z += currentSpeed;
+            if (gridHelper.position.z > 0) gridHelper.position.z = -50;
+
+            // Di chuyển Particles
+            particles.position.z += currentSpeed;
+            if (particles.position.z > 20) particles.position.z = -50;
+
+            // 4. Xử lý Chướng ngại vật
+            // Spawn logic
+            if (Math.random() < 0.02 + (score/100000)) { // Càng chạy xa càng nhiều chướng ngại
+                spawnObstacle();
+            }
+
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                let obs = obstacles[i];
+                obs.position.z += currentSpeed;
+                obs.rotation.x += 0.02;
+                obs.rotation.y += 0.02;
+
+                // Va chạm (Collision Detection đơn giản)
+                if (obs.position.z > 0 && obs.position.z < 3) {
+                    if (Math.abs(obs.position.x - player.position.x) < 2) {
+                        gameOver();
+                    }
+                }
+
+                // Xóa khi đi qua camera
+                if (obs.position.z > 10) {
+                    scene.remove(obs);
+                    obstacles.splice(i, 1);
+                }
+            }
+
+            // Tăng tốc độ dần dần
+            if (speed < CONFIG.maxSpeed) speed += 0.0001;
+
+            // Hiệu ứng Camera (FOV) khi boost
+            if (isBoosting) {
+                camera.fov = 90 + Math.random() * 2;
+            } else {
+                camera.fov += (75 - camera.fov) * 0.1;
+            }
+            camera.updateProjectionMatrix();
+
+            renderer.render(scene, camera);
+        }
+
+        // --- CONTROLS ---
+        function handleInput(e) {
+            if (!gameActive && (e.code === 'Space' || e.code === 'Enter')) {
+                startGame();
+                return;
+            }
+            if (!gameActive) return;
+
+            switch(e.code) {
+                case 'ArrowLeft':
+                case 'KeyA':
+                    if (currentLane > -1) currentLane--;
+                    break;
+                case 'ArrowRight':
+                case 'KeyD':
+                    if (currentLane < 1) currentLane++;
+                    break;
+                case 'Space':
+                    isBoosting = true;
+                    break;
+            }
+            targetX = currentLane * CONFIG.laneWidth;
+        }
+
+        function handleKeyUp(e) {
+            if (e.code === 'Space') {
+                isBoosting = false;
+            }
+        }
+
+        // --- GAME STATE ---
+        function startGame() {
+            gameActive = true;
+            score = 0;
+            speed = CONFIG.baseSpeed;
+            obstacles.forEach(o => scene.remove(o));
+            obstacles = [];
+            document.getElementById('start-screen').style.display = 'none';
+            document.getElementById('game-over-screen').style.display = 'none';
+        }
+
+        function gameOver() {
+            gameActive = false;
+            document.getElementById('final-score').innerText = Math.floor(score);
+            document.getElementById('game-over-screen').style.display = 'block';
+            
+            // Hiệu ứng nổ (đơn giản là rung camera mạnh)
+            camera.position.x = (Math.random() - 0.5) * 2;
+            camera.position.y = (Math.random() - 0.5) * 2;
+        }
+
+        function updateHUD() {
+            document.getElementById('score').innerText = Math.floor(score);
+            let displaySpeed = Math.floor(speed * 300) + (isBoosting ? 200 : 0);
+            document.getElementById('speed-display').innerText = displaySpeed;
+            
+            let percentage = Math.min((displaySpeed / 800) * 100, 100);
+            document.getElementById('speed-bar-fill').style.width = percentage + '%';
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // Khởi chạy
+        init();
+
+    </script>
+</body>
+</html>
